@@ -9,36 +9,69 @@ echo "🚀 Preparing to run Voicet..."
 
 # 1. Define paths
 PROJECT_ROOT="$(pwd)"
-VENV_BIN="$PROJECT_ROOT/venv/bin"
 UPLOAD_DIR="$PROJECT_ROOT/Voicet/project/static/uploads"
 
-# 2. Check for virtual environment
-if [ ! -d "$PROJECT_ROOT/venv" ]; then
-    echo "❌ Virtual environment not found. Please create it first:"
-    echo "python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt"
-    exit 1
+# Detect OS to set the correct venv bin path
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+    VENV_BIN="$PROJECT_ROOT/venv/Scripts"
+    PYTHON_EXE="python"
+else
+    VENV_BIN="$PROJECT_ROOT/venv/bin"
+    PYTHON_EXE="python3"
 fi
 
-# 3. Create required directories
+# 2. Setup Virtual Environment
+if [ ! -d "$PROJECT_ROOT/venv" ]; then
+    echo "📦 Creating virtual environment..."
+    $PYTHON_EXE -m venv venv
+fi
+
+# 3. Install/Update Dependencies
+echo "📥 Checking dependencies..."
+"$VENV_BIN/pip" install -q --upgrade pip
+"$VENV_BIN/pip" install -q -r requirements.txt
+
+# 4. Create required directories
 echo "📁 Ensuring upload directory exists..."
 mkdir -p "$UPLOAD_DIR"
+touch "$UPLOAD_DIR/.gitkeep"
 
-# 4. Check for system dependencies
-echo "🔍 Checking system dependencies..."
-if ! command -v ffmpeg &> /dev/null; then
-    echo "⚠️ Warning: 'ffmpeg' is not installed. Video processing will fail."
-fi
-if ! command -v sox &> /dev/null; then
-    echo "⚠️ Warning: 'sox' is not installed. Audio joining will fail."
-fi
+# 5. Check System Dependencies
+echo "🔍 Checking system binaries..."
+MISSING_SYS=()
+if ! command -v ffmpeg &> /dev/null; then MISSING_SYS+=("ffmpeg"); fi
+if ! command -v sox &> /dev/null; then MISSING_SYS+=("sox"); fi
 
-# 5. Check for Vakyansh TTS models (Hindi)
-MODEL_CHECK_PATH="$PROJECT_ROOT/VAKYANSH_TTS/tts_infer/translit_models/hindi/female/glow_ckp"
-if [ ! -d "$MODEL_CHECK_PATH" ]; then
-    echo "ℹ️ Note: Hindi TTS models not found. You can download them using ./setup_models.sh"
+if [ ${#MISSING_SYS[@]} -gt 0 ]; then
+    echo "⚠️  Missing system tools: ${MISSING_SYS[*]}"
+    echo "Please install them to ensure video and audio processing works correctly."
 fi
 
-# 6. Run the application
+# 6. Check Vakyansh TTS Models
+echo "🔍 Verifying voice models..."
+LANGUAGES=("hindi" "kannada" "tamil" "telugu" "odia" "malayalam" "marathi" "gujarati" "bengali" "english")
+MISSING_MODELS=()
+
+# Check for transliteration models first
+if [ ! -f "$PROJECT_ROOT/VAKYANSH_TTS/tts_infer/translit_models/default_lineup.json" ]; then
+    echo "ℹ️  Transliteration models are missing."
+    MISSING_MODELS+=("transliteration_base")
+fi
+
+for lang in "${LANGUAGES[@]}"; do
+    if [ ! -d "$PROJECT_ROOT/VAKYANSH_TTS/tts_infer/translit_models/$lang" ]; then
+        MISSING_MODELS+=("$lang")
+    fi
+done
+
+if [ ${#MISSING_MODELS[@]} -gt 0 ]; then
+    echo "ℹ️  Some voice models are missing: ${MISSING_MODELS[*]}"
+    echo "👉 Run './setup_models.sh' to download the required models."
+else
+    echo "✅ Voice models verified."
+fi
+
+# 7. Start Application
 echo "🌐 Starting Flask application..."
 cd Voicet
 export FLASK_APP=project

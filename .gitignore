@@ -1,1 +1,47 @@
-Voicet/project/static/uploads/
+# Voicet specific
+Voicet/project/static/uploads/*
+!Voicet/project/static/uploads/.gitkeep
+VAKYANSH_TTS/tts_infer/translit_models/
+*.wav
+temp_*.wav
+output.wav
+Dubbed_*.mp4
+*.mp4
+!Voicet-Homepage.png
+
+# Environments
+venv/
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Editors/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

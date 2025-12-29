@@ -1,3 +1,24 @@
+import torch
+import functools
+import inspect
+
+# Fix for PyTorch 2.6+ weights_only issue across all libraries (including Whisper/TTS)
+def patch_torch_load():
+    try:
+        original_load = torch.load
+        sig = inspect.signature(original_load)
+        if 'weights_only' in sig.parameters:
+            @functools.wraps(original_load)
+            def safe_load(*args, **kwargs):
+                if 'weights_only' not in kwargs:
+                    kwargs['weights_only'] = False
+                return original_load(*args, **kwargs)
+            torch.load = safe_load
+    except Exception:
+        pass
+
+patch_torch_load()
+
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager

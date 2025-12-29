@@ -11,6 +11,12 @@ import random
 import string
 
 
+import logging
+
+# Configure logging to show up in Colab
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 main = Blueprint('main', __name__)
 
 @main.route('/')
@@ -33,7 +39,12 @@ def upload():
             random_string = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
             random_filename = random_string + '.mp4'
             upload_dir = os.path.join(current_app.root_path, 'static', 'uploads')
+            if not os.path.exists(upload_dir):
+                os.makedirs(upload_dir)
+                
             file_path = os.path.join(upload_dir, random_filename)
+            
+            logger.info(f"Downloading YouTube video from {url}")
             
             ydl_opts = {
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -57,32 +68,46 @@ def upload():
 
             db.session.add(new_video)
             db.session.commit()
+            logger.info(f"YouTube video saved: {title}")
             flash('YouTube video has been saved!', 'success')
             return redirect(url_for('main.gallery'))
         except Exception as e:
+            logger.error(f"Error downloading YouTube video: {e}")
             flash(f'Error downloading YouTube video: {str(e)}', 'danger')
             return redirect(url_for('main.index'))
 
     if file and file.filename != '':
-        random_string = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
-        file_extension = os.path.splitext(file.filename)[1]
-        random_filename = random_string + file_extension
-        file_path = os.path.join(current_app.root_path, 'static', 'uploads', random_filename)
+        try:
+            random_string = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+            file_extension = os.path.splitext(file.filename)[1]
+            random_filename = random_string + file_extension
+            
+            upload_dir = os.path.join(current_app.root_path, 'static', 'uploads')
+            if not os.path.exists(upload_dir):
+                os.makedirs(upload_dir)
 
-        file.save(file_path)
-        new_video = Videos(
-            file_name=random_filename,
-            file_extension=file_extension,
-            original_filename=file.filename,
-            file_path=file_path,
-            video_processed=0,
-            percent_processed=0,
-            posted_by=current_user.name)
+            file_path = os.path.join(upload_dir, random_filename)
 
-        db.session.add(new_video)
-        db.session.commit()
-        flash('Post has been saved!', 'success')
-        return redirect(url_for('main.gallery'))
+            file.save(file_path)
+            
+            new_video = Videos(
+                file_name=random_filename,
+                file_extension=file_extension,
+                original_filename=file.filename,
+                file_path=file_path,
+                video_processed=0,
+                percent_processed=0,
+                posted_by=current_user.name)
+
+            db.session.add(new_video)
+            db.session.commit()
+            logger.info(f"Uploaded file saved: {file.filename}")
+            flash('Post has been saved!', 'success')
+            return redirect(url_for('main.gallery'))
+        except Exception as e:
+            logger.error(f"Error uploading file: {e}")
+            flash(f'Error uploading file: {str(e)}', 'danger')
+            return redirect(url_for('main.index'))
 
     flash('No file or URL provided', 'warning')
     return redirect(url_for('main.index'))
@@ -98,14 +123,17 @@ def download_post(id):
     filename = video.file_name
     original_filename = video.original_filename
     uploads = os.path.join(current_app.root_path, "static/uploads/")
-#    return send_from_directory(uploads, filename=filename, as_attachment=True, download_name=original_filename)
-    return send_from_directory(uploads, filename, as_attachment=True,download_name=original_filename)
+    if not os.path.exists(os.path.join(uploads, filename)):
+        flash('File not found on server.', 'danger')
+        return redirect(url_for('main.gallery'))
+        
+    return send_from_directory(uploads, filename, as_attachment=True, download_name=original_filename)
 
 
 @main.route('/gallery')
 @login_required
 def gallery():
-    videos = Videos.query.all()
+    videos = Videos.query.filter_by(posted_by=current_user.name).all() # Only show own videos
     return render_template('gallery.html', videos=videos , active='gallery')
 
 @main.route('/gallery/<int:id>/delete', methods=['GET'])
@@ -113,105 +141,90 @@ def gallery():
 def delete_post(id):
     video = Videos.query.get_or_404(id)
     if video.posted_by != current_user.name:
-        abort(403) 
-    db.session.delete(video)
-    db.session.commit()
-    flash('Post has been deleted!','danger')
+        abort(403)
+        
+    try:
+        # Delete file from disk
+        if os.path.exists(video.file_path):
+            os.remove(video.file_path)
+            logger.info(f"Deleted file: {video.file_path}")
+        else:
+            logger.warning(f"File not found for deletion: {video.file_path}")
+            
+        db.session.delete(video)
+        db.session.commit()
+        flash('Post has been deleted!','success') # changed to success for better UX
+    except Exception as e:
+        logger.error(f"Error deleting video: {e}")
+        flash(f'Error deleting video: {str(e)}', 'danger')
+        
     return redirect(url_for('main.gallery'))
 
 @main.route('/gallery/<int:id>/translate', methods=['GET','POST'])
 @login_required
 def translate_post(id):
+    video = Videos.query.get_or_404(id)
+    if video.posted_by != current_user.name:
+        abort(403)
+
     if request.method == 'GET':
-        video = Videos.query.get_or_404(id)
-        if video.posted_by != current_user.name:
-            abort(403)
         flash('Post can be translated!','success')
         return render_template('translate_post.html', video=video)
 
     elif request.method == 'POST':
-        video = Videos.query.get_or_404(id)
-        if video.posted_by != current_user.name:
-            abort(403)
-        flash('Post can be translated!','success')
+        #flash('Processing translation...', 'info') # Flash pushes processing msg
 
-        #url = request.form["url"]
         filepath = video.file_path
         language_voice = request.form.get('translateTo')
         gender_voice = request.form.get('gender')
-        if gender_voice == "male":
-            gender = 'male'
-        else :
-            gender = 'female'
+        
+        gender = 'male' if gender_voice == "male" else 'female'
 
-        print(f'File Uploaded : {filepath}')
-        print(f'Translate To : {language_voice}')
-        print(f'Voice Gender : {gender_voice}')
+        logger.info(f'Processing Translation ID: {id}')
+        logger.info(f'File: {filepath}')
+        logger.info(f'Target: {language_voice}, Gender: {gender}')
 
         random_string = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
         file_extension = video.file_extension
-        random_filename = random_string+file_extension
-        file_path = os.path.join(current_app.root_path, 'static', 'uploads', random_filename)
-
-
-        new_video = Videos(
-            file_name=random_filename,
-            file_extension=file_extension,
-            original_filename=video.original_filename,
-            file_path=file_path, 
-            video_processed=1,
-            percent_processed=100,
-            posted_by=current_user.name)
-
-        db.session.add(new_video)
-        db.session.commit()
-
-
-        random_string = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
-        file_extension = video.file_extension
-        random_filename = random_string+file_extension
-        output_path = os.path.join(current_app.root_path, 'static', 'uploads', random_filename)
-
+        random_filename = random_string + file_extension
+        
+        # Determine output path
+        upload_dir = os.path.join(current_app.root_path, 'static', 'uploads')
+        if not os.path.exists(upload_dir):
+            os.makedirs(upload_dir)
+            
+        output_path = os.path.join(upload_dir, random_filename)
 
         try:
-            translate_video(filepath,language_voice,gender_voice, output_path)
-            flash('Video Translated Succesfully','success')
+            # Perform translation FIRST
+            translate_video(filepath, language_voice, gender_voice, output_path)
+            
+            # ONLY create DB entry if successful
+            new_video = Videos(
+                file_name=random_filename,
+                file_extension=file_extension,
+                original_filename=f"Translated_{video.original_filename}",
+                file_path=output_path, 
+                video_processed=1,
+                percent_processed=100,
+                posted_by=current_user.name)
+
+            db.session.add(new_video)
+            db.session.commit()
+            
+            logger.info(f"Translation successful, saved as {random_filename}")
+            flash('Video Translated Successfully', 'success')
+            
+            # Allow immediate download
+            return send_from_directory(upload_dir, random_filename, as_attachment=True, download_name=new_video.original_filename)
+            
         except Exception as e:
+            logger.error(f"Translation failed: {e}")
+             # Cleanup if file was partially created
+            if os.path.exists(output_path):
+                os.remove(output_path)
             flash(f'Translation failed: {str(e)}', 'danger')
             return redirect(url_for('main.gallery'))
-#        uploads = os.path.join(current_app.root_path, "../")
-#        filename='output.mp4'
-#    return send_from_directory(uploads, filename=filename, as_attachment=True, download_name=original_filename)
-#        return send_from_directory(uploads, filename, as_attachment=True,download_name=video.original_filename)
-        filename = random_filename
-        original_filename = video.original_filename
-        uploads = os.path.join(current_app.root_path, "static/uploads/")
-#    return send_from_directory(uploads, filename=filename, as_attachment=True, download_name=original_filename)
-        return send_from_directory(uploads, filename, as_attachment=True,download_name=original_filename)
-
-        #return send_file('output.mp4',   download_name=(f'Dubbed_{language_voice}_{gender_voice}_{video.original_filename}.mp4') ,as_attachment=True)
-
-        if url:
-            youtube = YouTube(url)
-            filename_original = youtube.title
-            video = youtube.streams.get_highest_resolution()
-            random_string = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
-            filename = random_string + '.mp4'
-            video_path = video.download(filename=filename)
-            print(f'Filename : {filename}')
-            print(f'Filepath : {video_path}')
-            flash('File Uploaded','success')
-            print(video_path)
-            translate_video(video_path,language_voice,gender_voice, random_string)
-            flash('Video Translated Succesfully','success')
-            return send_file('output.mp4',   download_name=(f'Dubbed_{language_voice}_{gender_voice}_{filename_original}.mp4') ,as_attachment=True)
 
 
-        else:
-            flash('File not allowed. Only mp4, avi and mkv are allowed','warning')
-            return redirect('/')
-    return redirect('/')
-
-
-#translate_video('/home/shubhankar/Test/flask_auth_app/project/static/uploads/ruxhnff711.mp4','hindi','male')
 

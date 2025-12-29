@@ -8,6 +8,26 @@ import pandas as pd
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
 import re
 import torch
+import functools
+import inspect
+import numpy as np
+
+# Fix for PyTorch 2.6+ weights_only issue across all libraries (including Whisper/TTS)
+def patch_torch_load():
+    try:
+        original_load = torch.load
+        sig = inspect.signature(original_load)
+        if 'weights_only' in sig.parameters:
+            @functools.wraps(original_load)
+            def safe_load(*args, **kwargs):
+                if 'weights_only' not in kwargs:
+                    kwargs['weights_only'] = False
+                return original_load(*args, **kwargs)
+            torch.load = safe_load
+    except Exception:
+        pass
+
+patch_torch_load()
 import wave
 import random
 import string
@@ -22,6 +42,9 @@ sys.path.append(vakyansh_path)
 from tts_infer.tts import TextToMel, MelToWav
 from tts_infer.transliterate import XlitEngine
 from tts_infer.num_to_word_on_sent import normalize_nums
+
+if hasattr(torch.serialization, 'add_safe_globals'):
+    torch.serialization.add_safe_globals([np.core.multiarray.scalar])
 
 # Global cache for TTS models to avoid reloading on every request
 tts_model_cache = {}
@@ -241,13 +264,33 @@ for code in codes_as_string:
     flores_codes[lang] = lang_code
 
 
-asr_model = whisper.load_model('tiny.en')
-transcribe_options = dict(beam_size=5, best_of=5, without_timestamps=False, language='English', fp16=False)
+# --- Model Configuration ---
+# Whisper Model (Transcription)
+# Options: 'tiny.en', 'base.en', 'small.en', 'medium.en'
+# 'base.en' is a good balance of speed and accuracy. 
+WHISPER_MODEL_NAME = 'base.en'
+asr_model = whisper.load_model(WHISPER_MODEL_NAME)
+
+# Transcription Options
+# Increased beam_size/best_of improves quality but needs more CPU.
+transcribe_options = dict(
+    beam_size=5, 
+    best_of=5, 
+    without_timestamps=False, 
+    language='English', 
+    fp16=False
+)
 
 device = "cpu"
-TASK = "translation"
-CKPT = "facebook/nllb-200-distilled-600M"
+if torch.cuda.is_available():
+    device = "cuda"
 
+# NLLB Model (Translation)
+# Options: 'facebook/nllb-200-distilled-600M' (Fast), 'facebook/nllb-200-distilled-1.3B' (Accurate)
+TASK = "translation"
+CKPT = "facebook/nllb-200-distilled-1.3B"
+
+print(f"Loading {CKPT}...")
 model = AutoModelForSeq2SeqLM.from_pretrained(CKPT)
 tokenizer = AutoTokenizer.from_pretrained(CKPT)
 
@@ -344,13 +387,17 @@ def logout():
 
 def get_captions(file_path):
     audio = whisper.load_audio(file_path)
-    # Using beam_size=1 and best_of=1 to resolve "cannot reshape tensor of 0 elements" error on CPU
-    # with certain torch/whisper/python 3.14 combinations.
-    options = transcribe_options.copy()
-    options['beam_size'] = 1
-    options['best_of'] = 1
     
-    transcription = asr_model.transcribe(audio, **options)
+    try:
+        # Try with the high-quality options defined at the top
+        transcription = asr_model.transcribe(audio, **transcribe_options)
+    except Exception as e:
+        print(f"⚠️ High-quality transcription failed ({e}). Retrying with simpler settings...")
+        # Fallback to beam_size=1 to avoid "cannot reshape tensor" errors
+        fallback_options = transcribe_options.copy()
+        fallback_options['beam_size'] = 1
+        fallback_options['best_of'] = 1
+        transcription = asr_model.transcribe(audio, **fallback_options)
     
     rows = []
     for segment in transcription['segments']:
@@ -379,21 +426,73 @@ def convert_floats(row):
     return ' '.join(words)
 
 
-def translate(df, src_lang="eng_Latn", tgt_lang="hin_Deva", max_length=400):
+import logging
+logger = logging.getLogger(__name__)
+
+def translate(df, src_lang="eng_Latn", tgt_lang="hin_Deva", max_batch_chars=400):
+    """
+    Translates segments in the dataframe.
+    Uses context batching: groups multiple short segments into a single chunk
+    to provide better context (gender, tense, etc.) for the NLLB model.
+    """
     translation_pipeline = pipeline(TASK,
                                     model=model,
                                     tokenizer=tokenizer,
                                     src_lang=src_lang,
                                     tgt_lang=tgt_lang,
-                                    max_length=max_length,
+                                    max_length=400,
                                     device=device)
 
-
+    # REVISED ROBUST APPROACH: Prepend previous segment as context (prefixing)
+    # This is a common trick for NMT models.
+    
     output_column = []
+    previous_context = ""
+    
     for index, row in df.iterrows():
-        input_value = row['TEXT']
-        output_value = translation_pipeline(input_value)[0]['translation_text']
+        current_text = row['TEXT'].strip()
+        if not current_text:
+            output_column.append("")
+            continue
+            
+        # Prepend previous segment if available for context
+        # We don't want to translate the whole thing, just use it for context.
+        # NLLB doesn't have a "context" parameter, so we just give it more text.
+        
+        try:
+            if previous_context:
+                full_input = f"{previous_context} {current_text}"
+                result = translation_pipeline(full_input)
+                if result and len(result) > 0:
+                    translated_full = result[0]['translation_text']
+                    
+                    # Try to extract only the last part (the current segment's translation)
+                    # This is tricky without knowing the alignment. 
+                    
+                    output_value = translated_full # Fallback
+                    # If the translation has a clear sentence break, take the last part
+                    # (Very rough heuristic for Hindi/English)
+                    if '।' in translated_full:
+                        output_value = translated_full.split('।')[-1].strip()
+                    elif '.' in translated_full:
+                         output_value = translated_full.split('.')[-1].strip()
+                else:
+                    logger.warning(f"Translation returned empty result for: {full_input}")
+                    output_value = current_text
+            else:
+                result = translation_pipeline(current_text)
+                if result and len(result) > 0:
+                    output_value = result[0]['translation_text']
+                else:
+                    logger.warning(f"Translation returned empty result for: {current_text}")
+                    output_value = current_text
+        except Exception as e:
+            logger.error(f"Translation error at index {index}: {e}")
+            output_value = current_text # Fallback to original text on error
+            
         output_column.append(output_value)
+        previous_context = current_text
+        
     df['TRANSLATION'] = output_column
     return df
 
@@ -423,12 +522,12 @@ def run_tts(text, lang='hi',count=0):
 #    mel_to_wav = MelToWav(hifi_model_dir=hifi_model_dir, device=device)
 
 
-    print("Original Text from user: ", text)
+    logger.info(f"Original Text from user: {text}")
     if lang == 'hi':
         text = text.replace('।', '.') # only for hindi models
     text_num_to_word = normalize_nums(text, lang) # converting numbers to words in lang
     text_num_to_word_and_transliterated = translit(text_num_to_word, lang) # transliterating english words to lang
-    print("Text after preprocessing: ", text_num_to_word_and_transliterated)
+    logger.info(f"Text after preprocessing: {text_num_to_word_and_transliterated}")
 
 
     mel = text_to_mel.generate_mel(text_num_to_word_and_transliterated)
@@ -444,14 +543,14 @@ def run_tts(text, lang='hi',count=0):
 
 def translate_video(video_path,language_voice,gender_voice,output_path):
     df = get_captions(video_path)
-    print('*'*200)
-    print('Subtitles Generated')
+    logger.info('*'*50)
+    logger.info('Subtitles Generated')
     df['TEXT'] = df.apply(lambda row: convert_floats(row), axis=1)
     tgt_lang = flores_codes[language_voice.capitalize()]
     df2 = translate(df,tgt_lang=tgt_lang)
-    print('*'*200)
-    print('Subtitles Translated')
-    print(df2)
+    logger.info('*'*50)
+    logger.info('Subtitles Translated')
+    logger.info(df2.head())
 
     language_voice= language_voice.lower()
     gender_voice = gender_voice.lower()
@@ -463,12 +562,11 @@ def translate_video(video_path,language_voice,gender_voice,output_path):
     glow_model_dir = os.path.join(vakyansh_path, 'tts_infer', 'translit_models', language_voice, gender_voice, 'glow_ckp')
     hifi_model_dir = os.path.join(vakyansh_path, 'tts_infer', 'translit_models', language_voice, gender_voice, 'hifi_ckp')
 
-    print('#'*200)
-    print(language_voice)
-    print(gender_voice)
-    print(glow_model_dir)
-    print(hifi_model_dir)
-    print('#'*200)
+    logger.info('#'*50)
+    logger.info(f"Lang: {language_voice}, Gender: {gender_voice}")
+    logger.info(f"Glow: {glow_model_dir}")
+    logger.info(f"HiFi: {hifi_model_dir}")
+    logger.info('#'*50)
 
     global tts_model_cache
     

@@ -1,0 +1,3 @@
+[submodule "VAKYANSH_TTS"]
+	path = VAKYANSH_TTS
+	url = https://github.com/Ujjawalmaurya/vakyansh-tts.git

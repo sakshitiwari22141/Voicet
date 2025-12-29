@@ -1,71 +1,94 @@
-# Voicet
-Step 1: 🎥 Voicet is an innovative Python-based application that facilitates the translation of videos from one language to another via a Progressive Web Application.
+# Voicet 🚀
 
-Step 2: 🚪 Upon accessing voicet.tech, users are directed to the Login Page. In the event that they don't possess an existing account, they can register via email by navigating to the Sign Up page located within the Navbar.
+Voicet is an automated video dubbing tool that translates and re-voices videos into multiple Indian languages. It leverages state-of-the-art AI models for transcription, translation, and text-to-speech.
 
-Step 3: 📝 To create an account, users are prompted to input their email address, username, and password. Upon completing registration, they will be directed to the Login Page, where they can input their login credentials to access their account.
+---
 
-Step 4: 📷 The Gallery exhibits all the videos that the User has posted. To upload a video, users must click on the Upload button located in the Navbar. Users have the option to download any YouTube short or upload any video of their own. After selecting their video, users must click on the Upload button.
+## 🤖 How it works?
+1. **Listen**: Transcribes the original audio using **Whisper**.
+2. **Translate**: Translates text to the target language using **NLLB-200**.
+3. **Speak**: Generates native-sounding audio using **Vakyansh** Indian language models.
+4. **Mix**: Synchronizes and muxes the new audio into the video using **FFmpeg** and **Sox**.
 
-Step 5: 🌐 To translate a video, users must select the Translate Button located on the desired video. They must then choose the language into which they wish to translate the video, as well as the gender of the audio. Once these preferences are selected, users must click on the Translate Button.
+---
 
-Step 6: 🤖 In order to translate the video, we generate captions from the video using OpenAI's Whisper STT (Speech To Text) Machine Learning Model. Next, we translate the English subtitles to the target language using Facebook's NLLB ML Model. Finally, we generate audio files from the translations utilizing Vakyansh TTS, merge the audio files, and superimpose them onto the original video.
+## 🛠️ System Requirements
 
-Check it out at https://voicet.tech 🌎🗣️
+- **Linux** (Ubuntu/Debian recommended) or **Windows** (via Git Bash)
+- **RAM**: 8GB Minimum (16GB+ recommended for smoother model loading)
+- **Disk Space**: ~10GB for models
+- **System Binaries**: `ffmpeg` and `sox` must be installed and in your PATH.
 
-# Setup & Installation on Linux
+---
 
-### 1. Prerequisites
-Ensure you have Python 3.10+ and the following Linux tools installed:
+## 🚀 Quick Start (Automated)
+
+The easiest way to get started is using the runner script:
+
 ```bash
-sudo apt update && sudo apt install ffmpeg sox
+sh run.sh
 ```
 
-### 2. Fetch VakyanshTTS Models
-The models are required for the Hindi voice. You can automate the setup or do it manually.
+This script will:
+1. Create a virtual environment and install Python dependencies.
+2. Check for system binaries (`ffmpeg`, `sox`).
+3. Verify if the required voice models are present.
+4. Start the Flask application.
 
-**Option A: Automated Setup (Recommended)**
-Install `megacmd` and run the download command:
+If it's your first time, you **must** download the voice models separately (see below).
+
+---
+
+## 📥 Manual Setup
+
+### 1. Install System Dependencies
+
+**Linux:**
 ```bash
-# Install megacmd via Homebrew
-brew install megacmd
-
-# Download Hindi female models
-# This will download the models directly to the required directory structure
-mega-get https://mega.nz/folder/VQlnHTiZ#WCUFo_ukvJbuMEWlfsUDPA VAKYANSH_TTS/tts_infer/translit_models/
+sudo apt update && sudo apt install ffmpeg sox unzip wget
 ```
 
-**Option B: Manual Setup**
-1. Download the models from [Mega.nz](https://mega.nz/folder/VQlnHTiZ#WCUFo_ukvJbuMEWlfsUDPA).
-2. Ensure the folder structure is:
-   `VAKYANSH_TTS/tts_infer/translit_models/hindi/female/glow_ckp`
-   `VAKYANSH_TTS/tts_infer/translit_models/hindi/female/hifi_ckp`
+**Windows:**
+1. Download `ffmpeg` from [ffmpeg.org](https://ffmpeg.org/download.html).
+2. Download `sox` for Windows.
+3. Add both directories to your **System Environment Variables (PATH)**.
 
+### 2. Download Voice Models
+The models for Hindi, Tamil, Telugu, etc., are quite large (~10GB total). Run the following to download everything:
 
-### 3. Environment Setup
-Create a virtual environment and install the required Python packages:
 ```bash
-# From the root of the repository
-python3 -m venv venv
-source venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+sh setup_models.sh
 ```
 
-### 4. Project Configuration
-Ensure the upload directory exists:
+---
+
+## 🖥️ Usage
+
+1. Run `sh run.sh` and open `http://127.0.0.1:5000` in your browser.
+2. Upload a video (mp4, avi, mkv) or provide a YouTube URL.
+3. Select your target language and voice gender.
+4. Wait for processing—the dubbed video will download automatically once finished!
+
+---
+
+## 📝 Tips & Troubleshooting
+
+### Torch 2.6 Weights Error
+If you see a `Weights only load failed` error, the code includes a monkeypatch for PyTorch 2.6+ to allow loading older model formats safely. This is handled automatically.
+
+### Cleaning Temporary Files
+The processing generates many small `.wav` files. To clean them up:
 ```bash
-mkdir -p Voicet/project/static/uploads
+sh clean_temp.sh
 ```
 
-### 5. Running the Application
-```bash
-cd Voicet
-export FLASK_APP=project
-flask run
-```
-Then open your browser and navigate to `http://127.0.0.1:5000`.
+### Accuracy & Performance
+- **Model Size**: We use `nllb-200-distilled-1.3B` for speed. For higher accuracy, you can edit `voicet.py` to use the `3.3B` version if you have enough RAM/VRAM.
+- **Background Noise**: Clean audio leads to better results. Noisy backgrounds might cause Whisper to skip words.
 
-# Screenshot
+For more details, see our [Accuracy Log](docs/ACCURACY_LOG.md).
+
+---
+
+## 📸 Interface
 ![Voicet Homepage](Voicet-Homepage.png)
-
