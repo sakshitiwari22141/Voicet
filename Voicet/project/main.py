@@ -1,9 +1,9 @@
-from flask import Blueprint, render_template, request, redirect, url_for, abort, flash, current_app, send_from_directory, send_file
+from flask import Blueprint, render_template, request, redirect, url_for, abort, flash, current_app, send_from_directory, send_file, jsonify
 from flask_login import login_required, current_user
 from . import db
 from .models import Videos
 from werkzeug.utils import secure_filename
-from .voicet import translate_video
+from .worker import process_video_task
 import yt_dlp
 
 import os
@@ -172,59 +172,64 @@ def translate_post(id):
         return render_template('translate_post.html', video=video)
 
     elif request.method == 'POST':
-        #flash('Processing translation...', 'info') # Flash pushes processing msg
-
         filepath = video.file_path
         language_voice = request.form.get('translateTo')
         gender_voice = request.form.get('gender')
         
         gender = 'male' if gender_voice == "male" else 'female'
 
-        logger.info(f'Processing Translation ID: {id}')
-        logger.info(f'File: {filepath}')
-        logger.info(f'Target: {language_voice}, Gender: {gender}')
-
+        logger.info(f'Queuing Translation ID: {id}')
+        
         random_string = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
         file_extension = video.file_extension
         random_filename = random_string + file_extension
         
-        # Determine output path
+        # Determine output path independent of current working directory
         upload_dir = os.path.join(current_app.root_path, 'static', 'uploads')
         if not os.path.exists(upload_dir):
             os.makedirs(upload_dir)
             
         output_path = os.path.join(upload_dir, random_filename)
+        
+        # Start Celery Task
+        task = process_video_task.delay(filepath, language_voice, gender_voice, output_path, f"Translated_{video.original_filename}")
+        
+        # We don't save to DB immediately, or we could save with 'Processing' status.
+        # For now, let's just return the Task ID to the frontend.
+        return jsonify({'task_id': task.id}), 202
 
-        try:
-            # Perform translation FIRST
-            translate_video(filepath, language_voice, gender_voice, output_path)
+@main.route('/status/<task_id>')
+def taskstatus(task_id):
+    task = process_video_task.AsyncResult(task_id)
+    if task.state == 'PENDING':
+        response = {
+            'state': task.state,
+            'current': 0,
+            'total': 1,
+            'status': 'Pending...'
+        }
+    elif task.state != 'FAILURE':
+        response = {
+            'state': task.state,
+            'current': task.info.get('current', 0),
+            'total': task.info.get('total', 1),
+            'status': task.info.get('status', '')
+        }
+        if 'result' in task.info:
+            response['result'] = task.info['result']
+            response['original_filename'] = task.info.get('original_filename', 'translated.mp4')
             
-            # ONLY create DB entry if successful
-            new_video = Videos(
-                file_name=random_filename,
-                file_extension=file_extension,
-                original_filename=f"Translated_{video.original_filename}",
-                file_path=output_path, 
-                video_processed=1,
-                percent_processed=100,
-                posted_by=current_user.name)
-
-            db.session.add(new_video)
-            db.session.commit()
+            # Here we might want to save to DB if we didn't before.
+            # But the worker function doesn't have access to Flask app context properly unless configured.
+            # For simplicity, we can let the task return the path and frontend redirects to a 'save' endpoint, 
+            # Or assume the worker saved the file and we just need to let the user download it.
             
-            logger.info(f"Translation successful, saved as {random_filename}")
-            flash('Video Translated Successfully', 'success')
-            
-            # Allow immediate download
-            return send_from_directory(upload_dir, random_filename, as_attachment=True, download_name=new_video.original_filename)
-            
-        except Exception as e:
-            logger.error(f"Translation failed: {e}")
-             # Cleanup if file was partially created
-            if os.path.exists(output_path):
-                os.remove(output_path)
-            flash(f'Translation failed: {str(e)}', 'danger')
-            return redirect(url_for('main.gallery'))
-
-
-
+    else:
+        # something went wrong in the background job
+        response = {
+            'state': task.state,
+            'current': 1,
+            'total': 1,
+            'status': str(task.info),  # this is the exception raised
+        }
+    return jsonify(response)
