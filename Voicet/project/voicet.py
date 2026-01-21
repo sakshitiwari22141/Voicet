@@ -1,18 +1,26 @@
-from flask import Flask, render_template, request, redirect, session, flash, make_response, send_file
-from werkzeug.utils import secure_filename
+
 import os
 import subprocess
 import whisper
 import pandas as pd
-# from pytube import YouTube (Removed as we use yt-dlp in main.py)
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
 import re
 import torch
 import functools
 import inspect
 import numpy as np
+import wave
+import random
+import string
+from scipy.io.wavfile import write
+import sys
+import logging
 
-# Fix for PyTorch 2.6+ weights_only issue across all libraries (including Whisper/TTS)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Fix for PyTorch 2.6+ weights_only issue
 def patch_torch_load():
     try:
         original_load = torch.load
@@ -28,17 +36,11 @@ def patch_torch_load():
         pass
 
 patch_torch_load()
-import wave
-import random
-import string
 
-
-from scipy.io.wavfile import write
-import sys
-
-# sys.path.append('/home/shubhankar/Project/VAKYANSH_TTS')
+# Add Vakanysh path
 vakyansh_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'VAKYANSH_TTS'))
 sys.path.append(vakyansh_path)
+
 from tts_infer.tts import TextToMel, MelToWav
 from tts_infer.transliterate import XlitEngine
 from tts_infer.num_to_word_on_sent import normalize_nums
@@ -46,10 +48,43 @@ from tts_infer.num_to_word_on_sent import normalize_nums
 if hasattr(torch.serialization, 'add_safe_globals'):
     torch.serialization.add_safe_globals([np.core.multiarray.scalar])
 
-# Global cache for TTS models to avoid reloading on every request
-tts_model_cache = {}
+# --- Global Configuration & Cache ---
+device = "cuda" if torch.cuda.is_available() else "cpu"
+logger.info(f"Using device: {device}")
 
+_model_cache = {}
 
+WHISPER_MODEL_NAME = 'base.en'
+NLLB_CHECKPOINT = "facebook/nllb-200-3.3B"
+
+# --- Lazy Loading Functions ---
+
+def get_whisper_model():
+    if 'whisper' not in _model_cache:
+        logger.info(f"Loading Whisper model: {WHISPER_MODEL_NAME}...")
+        _model_cache['whisper'] = whisper.load_model(WHISPER_MODEL_NAME, device=device)
+    return _model_cache['whisper']
+
+def get_nllb_pipeline(src_lang, tgt_lang):
+    # Cache key based on model name, not lang (pipeline can be reused if we just load model once)
+    # Actually, pipeline is specific to task, but model/tokenizer are heavy.
+    
+    if 'nllb_model' not in _model_cache:
+        logger.info(f"Loading NLLB model: {NLLB_CHECKPOINT}...")
+        _model_cache['nllb_model'] = AutoModelForSeq2SeqLM.from_pretrained(NLLB_CHECKPOINT).to(device)
+        _model_cache['nllb_tokenizer'] = AutoTokenizer.from_pretrained(NLLB_CHECKPOINT)
+    
+    # We create a new pipeline for the specific language pair, but reuse the loaded model
+    # Note: The original code created a pipeline every time. We can do the same but use the cached model.
+    return pipeline("translation",
+                    model=_model_cache['nllb_model'],
+                    tokenizer=_model_cache['nllb_tokenizer'],
+                    src_lang=src_lang,
+                    tgt_lang=tgt_lang,
+                    max_length=400,
+                    device=0 if device == "cuda" else -1)
+
+# --- Language Codes ---
 
 codes_as_string = '''Acehnese (Arabic script)	ace_Arab
 Acehnese (Latin script)	ace_Latn
@@ -257,22 +292,14 @@ Standard Malay	zsm_Latn
 Zulu	zul_Latn'''
 
 codes_as_string = codes_as_string.split('\n')
-
 flores_codes = {}
 for code in codes_as_string:
     lang, lang_code = code.split('\t')
     flores_codes[lang] = lang_code
 
 
-# --- Model Configuration ---
-# Whisper Model (Transcription)
-# Options: 'tiny.en', 'base.en', 'small.en', 'medium.en'
-# 'base.en' is a good balance of speed and accuracy. 
-WHISPER_MODEL_NAME = 'base.en'
-asr_model = whisper.load_model(WHISPER_MODEL_NAME)
+# --- Transcription ---
 
-# Transcription Options
-# Increased beam_size/best_of improves quality but needs more CPU.
 transcribe_options = dict(
     beam_size=5, 
     best_of=5, 
@@ -281,119 +308,16 @@ transcribe_options = dict(
     fp16=False
 )
 
-device = "cpu"
-if torch.cuda.is_available():
-    device = "cuda"
-
-# NLLB Model (Translation)
-# Options: 'facebook/nllb-200-distilled-600M' (Fast), 'facebook/nllb-200-distilled-1.3B' (Accurate)
-TASK = "translation"
-CKPT = "facebook/nllb-200-distilled-1.3B"
-
-print(f"Loading {CKPT}...")
-model = AutoModelForSeq2SeqLM.from_pretrained(CKPT)
-tokenizer = AutoTokenizer.from_pretrained(CKPT)
-
-
-
-
-app = Flask(__name__)
-# hardcoded credentials
-USERS = {'user1': 'pass1', 'user2': 'pass2'}
-app.secret_key = 'secret_key'
-app.config['UPLOAD_FOLDER'] = 'uploads/'
-app.config['ALLOWED_EXTENSIONS'] = {'mp4', 'avi', 'mkv'}
-
-
-def allowed_file(filename):
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1] in app.config['ALLOWED_EXTENSIONS']
-@app.route('/upload', methods=['GET', 'POST'])
-def upload_file():
-    if request.method == 'POST':
-        url = request.form["url"]
-        file = request.files['file']
-        language_voice = request.form.get('translateTo')
-        gender_voice = request.form.get('gender')
-        if gender_voice == "male":
-            gender = 'male'
-        else :
-            gender = 'female'
-        print(f'File Uploaded : {file.filename}')
-        print(f'Translate To : {language_voice}')
-        print(f'Voice Gender : {gender_voice}')
-        if file and allowed_file(file.filename):
-            filename_original = secure_filename(file.filename)
-            random_string = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
-            extension = os.path.splitext(file.filename)[1]
-            filename = random_string + extension
-            video_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            file.save(video_path)
-            flash('File Uploaded','success')
-            print(video_path)
-            translate_video(video_path,language_voice,gender_voice,random_string)
-            flash('Video Translated Succesfully','success')
-            return send_file(f'{random_string}.mp4',   download_name=(f'Dubbed_{language_voice}_{gender_voice}_{filename_original}.mp4') ,as_attachment=True)
-
-        elif url:
-            youtube = YouTube(url)
-            filename_original = youtube.title
-            video = youtube.streams.get_highest_resolution()
-            random_string = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
-            filename = random_string + '.mp4'
-            video_path = video.download(filename=filename)
-            print(f'Filename : {filename}')
-            print(f'Filepath : {video_path}')
-            flash('File Uploaded','success')
-            print(video_path)
-            translate_video(video_path,language_voice,gender_voice, random_string)
-            flash('Video Translated Succesfully','success')
-            return send_file(f'{random_string}.mp4',   download_name=(f'Dubbed_{language_voice}_{gender_voice}_{filename_original}.mp4') ,as_attachment=True)
-
-
-        else:
-            flash('File not allowed. Only mp4, avi and mkv are allowed','warning')
-            return redirect('/')
-    return redirect('/')
-
-
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        # check if the entered credentials match the hardcoded ones
-        if request.form['username'] in USERS and request.form['password'] == USERS[request.form['username']]:
-            session['username'] = request.form['username']
-            return redirect('/')
-        else:
-            flash('Invalid credentials','danger')
-            return redirect('/login')
-    else:
-        return render_template('login.html')
-
-@app.route('/')
-def home():
-    if 'username' in session:
-        return render_template('home.html')
-    else:
-        return redirect('/login')
-
-
-@app.route('/logout')
-def logout():
-    # session.cookie.clear()
-    session.pop('username', None)
-    return redirect('/')
-
 def get_captions(file_path):
+    # Lazy load mechanism
+    asr_model = get_whisper_model()
+    
     audio = whisper.load_audio(file_path)
     
     try:
-        # Try with the high-quality options defined at the top
         transcription = asr_model.transcribe(audio, **transcribe_options)
     except Exception as e:
-        print(f"⚠️ High-quality transcription failed ({e}). Retrying with simpler settings...")
-        # Fallback to beam_size=1 to avoid "cannot reshape tensor" errors
+        logger.warning(f"⚠️ High-quality transcription failed ({e}). Retrying with simpler settings...")
         fallback_options = transcribe_options.copy()
         fallback_options['beam_size'] = 1
         fallback_options['best_of'] = 1
@@ -403,49 +327,26 @@ def get_captions(file_path):
     for segment in transcription['segments']:
         rows.append({'START' : segment['start'], 'END' : segment['end'], 'TEXT' : segment['text'] })
     
-    df = pd.DataFrame(rows)
-    return df
+    return pd.DataFrame(rows)
 
 def convert_floats(row):
-    # define regular expression pattern to match float values
     pattern = r'\d+\.\d+'
-    # split text into words
     words = row['TEXT'].split()
-    # check each word for a float
     for i in range(len(words)):
         if words[i].endswith('.'):
-            # remove last full stop from word
             words[i] = words[i][:-1]
         try:
             float_val = float(words[i])
-            # if float found, convert to string format
             words[i] = str(int(float_val)) + ' decimal ' + str(int(round (float_val % 1,2) * 10))
         except ValueError:
             pass
-    # join words back into text string
     return ' '.join(words)
 
 
-import logging
-logger = logging.getLogger(__name__)
-
 def translate(df, src_lang="eng_Latn", tgt_lang="hin_Deva", max_batch_chars=400):
-    """
-    Translates segments in the dataframe.
-    Uses context batching: groups multiple short segments into a single chunk
-    to provide better context (gender, tense, etc.) for the NLLB model.
-    """
-    translation_pipeline = pipeline(TASK,
-                                    model=model,
-                                    tokenizer=tokenizer,
-                                    src_lang=src_lang,
-                                    tgt_lang=tgt_lang,
-                                    max_length=400,
-                                    device=device)
+    logger.info(f"Translating to {tgt_lang}...")
+    translation_pipeline = get_nllb_pipeline(src_lang, tgt_lang)
 
-    # REVISED ROBUST APPROACH: Prepend previous segment as context (prefixing)
-    # This is a common trick for NMT models.
-    
     output_column = []
     previous_context = ""
     
@@ -455,46 +356,36 @@ def translate(df, src_lang="eng_Latn", tgt_lang="hin_Deva", max_batch_chars=400)
             output_column.append("")
             continue
             
-        # Prepend previous segment if available for context
-        # We don't want to translate the whole thing, just use it for context.
-        # NLLB doesn't have a "context" parameter, so we just give it more text.
-        
         try:
             if previous_context:
                 full_input = f"{previous_context} {current_text}"
                 result = translation_pipeline(full_input)
                 if result and len(result) > 0:
                     translated_full = result[0]['translation_text']
-                    
-                    # Try to extract only the last part (the current segment's translation)
-                    # This is tricky without knowing the alignment. 
-                    
-                    output_value = translated_full # Fallback
-                    # If the translation has a clear sentence break, take the last part
-                    # (Very rough heuristic for Hindi/English)
+                    output_value = translated_full
                     if '।' in translated_full:
                         output_value = translated_full.split('।')[-1].strip()
                     elif '.' in translated_full:
                          output_value = translated_full.split('.')[-1].strip()
                 else:
-                    logger.warning(f"Translation returned empty result for: {full_input}")
                     output_value = current_text
             else:
                 result = translation_pipeline(current_text)
                 if result and len(result) > 0:
                     output_value = result[0]['translation_text']
                 else:
-                    logger.warning(f"Translation returned empty result for: {current_text}")
                     output_value = current_text
         except Exception as e:
             logger.error(f"Translation error at index {index}: {e}")
-            output_value = current_text # Fallback to original text on error
+            output_value = current_text
             
         output_column.append(output_value)
         previous_context = current_text
         
     df['TRANSLATION'] = output_column
     return df
+
+# --- TTS & Transliteration ---
 
 def translit(text, lang):
     reg = re.compile(r'[a-zA-Z]')
@@ -503,62 +394,50 @@ def translit(text, lang):
     updated_sent = ' '.join(words)
     return updated_sent
 
-
-def run_tts(text, lang='hi',count=0):
-#    language_voice= language_voice.lower()
-#    gender_voice = gender_voice.lower()
-
-#    glow_model_dir=f'/home/shubhankar/TestProjects/WebApp/VAKYANSH_TTS/tts_infer/translit_models/{language_voice}/{gender_voice}/glow_ckp'
-#    hifi_model_dir=f'/home/shubhankar/TestProjects/WebApp/VAKYANSH_TTS/tts_infer/translit_models/{language_voice}/{gender_voice}/hifi_ckp'
-
-#    print('#'*200)
-#    print(language_voice)
-#    print(gender_voice)
-#    print(glow_model_dir)
-#    print(hifi_model_dir)
-#    print('#'*200)
-
-#    text_to_mel = TextToMel(glow_model_dir=glow_model_dir, device=device)
-#    mel_to_wav = MelToWav(hifi_model_dir=hifi_model_dir, device=device)
-
-
+def run_tts(text, lang='hi', count=0):
+    # Relies on global text_to_mel and mel_to_wav set in translate_video
+    # This is legacy behavior preserved for now.
+    
     logger.info(f"Original Text from user: {text}")
     if lang == 'hi':
-        text = text.replace('।', '.') # only for hindi models
-    text_num_to_word = normalize_nums(text, lang) # converting numbers to words in lang
-    text_num_to_word_and_transliterated = translit(text_num_to_word, lang) # transliterating english words to lang
+        text = text.replace('।', '.') 
+    text_num_to_word = normalize_nums(text, lang) 
+    text_num_to_word_and_transliterated = translit(text_num_to_word, lang) 
     logger.info(f"Text after preprocessing: {text_num_to_word_and_transliterated}")
-
 
     mel = text_to_mel.generate_mel(text_num_to_word_and_transliterated)
     audio, sr = mel_to_wav.generate_wav(mel)
 
     fName = f'temp_{count+1}_{random.randint(1000, 9999)}.wav'
-    write(filename=fName, rate=sr, data=audio) # for saving wav file, if needed
-    audio_file_path = os.path.abspath(fName)
-    return audio_file_path
+    write(filename=fName, rate=sr, data=audio)
+    return os.path.abspath(fName)
 
 
+# Global cache for TTS models
+tts_model_cache = {}
 
+# These must be global for run_tts to access them (legacy design)
+text_to_mel = None
+mel_to_wav = None
 
-def translate_video(video_path,language_voice,gender_voice,output_path):
+def translate_video(video_path, language_voice, gender_voice, output_path):
     df = get_captions(video_path)
-    logger.info('*'*50)
     logger.info('Subtitles Generated')
     df['TEXT'] = df.apply(lambda row: convert_floats(row), axis=1)
-    tgt_lang = flores_codes[language_voice.capitalize()]
-    df2 = translate(df,tgt_lang=tgt_lang)
-    logger.info('*'*50)
+    
+    tgt_lang = flores_codes.get(language_voice.capitalize())
+    if not tgt_lang:
+        logger.error(f"Language code not found for {language_voice}")
+        return
+
+    df2 = translate(df, tgt_lang=tgt_lang)
     logger.info('Subtitles Translated')
     logger.info(df2.head())
 
-    language_voice= language_voice.lower()
+    language_voice = language_voice.lower()
     gender_voice = gender_voice.lower()
-
-    # glow_model_dir=f'/home/shubhankar/Project/VAKYANSH_TTS/tts_infer/translit_models/{language_voice}/{gender_voice}/glow_ckp'
-    # hifi_model_dir=f'/home/shubhankar/Project/VAKYANSH_TTS/tts_infer/translit_models/{language_voice}/{gender_voice}/hifi_ckp'
     
-    vakyansh_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'VAKYANSH_TTS'))
+    # Path construction for Vakyansh models
     glow_model_dir = os.path.join(vakyansh_path, 'tts_infer', 'translit_models', language_voice, gender_voice, 'glow_ckp')
     hifi_model_dir = os.path.join(vakyansh_path, 'tts_infer', 'translit_models', language_voice, gender_voice, 'hifi_ckp')
 
@@ -569,18 +448,17 @@ def translate_video(video_path,language_voice,gender_voice,output_path):
     logger.info('#'*50)
 
     global tts_model_cache
+    global text_to_mel
+    global mel_to_wav
     
     model_key = f"{language_voice}_{gender_voice}"
     
     if model_key not in tts_model_cache:
-        print(f"Loading TTS models for {model_key}...")
+        logger.info(f"Loading TTS models for {model_key}...")
         if not os.path.exists(glow_model_dir) or not os.listdir(glow_model_dir):
-            raise FileNotFoundError(f"Missing Glow model directory: {glow_model_dir}. Please download the models as per README.")
+            raise FileNotFoundError(f"Missing Glow model directory: {glow_model_dir}")
         if not os.path.exists(hifi_model_dir) or not os.listdir(hifi_model_dir):
-            raise FileNotFoundError(f"Missing HiFi model directory: {hifi_model_dir}. Please download the models as per README.")
-
-        global text_to_mel
-        global mel_to_wav
+            raise FileNotFoundError(f"Missing HiFi model directory: {hifi_model_dir}")
 
         text_to_mel_instance = TextToMel(glow_model_dir=glow_model_dir, device=device)
         mel_to_wav_instance = MelToWav(hifi_model_dir=hifi_model_dir, device=device)
@@ -588,20 +466,18 @@ def translate_video(video_path,language_voice,gender_voice,output_path):
     
     text_to_mel, mel_to_wav = tts_model_cache[model_key]
 
-
-
-
     try:
+        # Use simple iterrows for now
         for index, row in df2.iterrows():
-        # get the translation and ID
             text = row['TRANSLATION']
-            id = index
-        # generate audio file using the TTS function and store the path in the "path" column
-            path = run_tts(text, count=id )
+            if not isinstance(text, str) or not text.strip():
+                continue
+            path = run_tts(text, lang=language_voice, count=index)
             df.at[index, 'AUDIO'] = path
-    except AssertionError:
-        print('Oooooooooooooooooooooooooooooooooooooooooooops')
-
+            
+    except Exception as e:
+        logger.error(f"TTS generation failed: {e}")
+        raise e
 
     wav_files = sorted([f for f in os.listdir('.') if f.startswith('temp_') and f.endswith('.wav')], key=lambda x: int(x.split('_')[1]))
     if wav_files:
@@ -617,9 +493,4 @@ def translate_video(video_path,language_voice,gender_voice,output_path):
         for f in wav_files + ["output.wav"]:
             if os.path.exists(f):
                 os.remove(f)
-
-
-
-
-
 
