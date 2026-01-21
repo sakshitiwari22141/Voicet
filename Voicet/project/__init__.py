@@ -22,6 +22,7 @@ patch_torch_load()
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager
+from .shutdown import register_signal_handlers
 
 # init SQLAlchemy so we can use it later in our models
 db = SQLAlchemy()
@@ -32,6 +33,8 @@ def create_app():
     app.config['SECRET_KEY'] = 'secret-key-goes-here'
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///db.sqlite'
     app.config['UPLOAD_FOLDER'] = 'static/uploads'
+
+    register_signal_handlers()
 
 
     db.init_app(app)
