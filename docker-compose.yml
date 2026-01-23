@@ -1,0 +1,16 @@
+services:
+  voicet-app:
+    build: .
+    image: voicet-app:latest
+    container_name: voicet_container
+    ports:
+      - "5000:5000"
+    volumes:
+      # Map the model storage from host to container
+      # This to prevent re-downloading models
+      - ./model_storage:/app/VAKYANSH_TTS/tts_infer/translit_models
+      # Persist uploads
+      - ./Voicet/project/static/uploads:/app/Voicet/project/static/uploads
+    # Ensuring that entrypoint script is executable
+    command: bash -c "chmod +x run_docker.sh && ./run_docker.sh"
+    restart: unless-stopped

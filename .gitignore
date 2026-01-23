@@ -45,3 +45,4 @@ MANIFEST
 # OS
 .DS_Store
 Thumbs.db
+model_storage/

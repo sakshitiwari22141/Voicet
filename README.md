@@ -62,6 +62,25 @@ sh setup_models.sh
 
 ---
 
+## 🐳 Docker Setup
+
+**Single Command Start:**
+```bash
+./start_docker.sh
+```
+This script automatically handles:
+- Model downloading/setup (if missing)
+- Model storage configuration (keeps Docker image light)
+- Docker build and launch
+
+**Prerequisites:**
+- Docker & Docker Compose
+
+
+application will be accessible at [http://localhost:5000](http://localhost:5000).
+
+---
+
 ## 🖥️ Usage
 
 1. Run `sh run.sh` and open `http://127.0.0.1:5000` in your browser.
