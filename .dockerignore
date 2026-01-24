@@ -23,3 +23,5 @@ coverage.xml
 model_storage/
 Voicet/project/static/uploads/
 VAKYANSH_TTS/tts_infer/translit_models/
+whisper_cache/
+hf_cache/

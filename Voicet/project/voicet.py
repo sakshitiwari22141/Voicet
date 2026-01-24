@@ -1,5 +1,6 @@
 
 import os
+import time
 import subprocess
 import whisper
 import pandas as pd
@@ -55,14 +56,16 @@ logger.info(f"Using device: {device}")
 _model_cache = {}
 
 WHISPER_MODEL_NAME = 'base.en'
-NLLB_CHECKPOINT = "facebook/nllb-200-3.3B"
+NLLB_CHECKPOINT = "facebook/nllb-200-distilled-600M"
 
 # --- Lazy Loading Functions ---
 
 def get_whisper_model():
     if 'whisper' not in _model_cache:
-        logger.info(f"Loading Whisper model: {WHISPER_MODEL_NAME}...")
+        start_time = time.time()
+        logger.info(f"⏳ Loading Whisper model: {WHISPER_MODEL_NAME}...")
         _model_cache['whisper'] = whisper.load_model(WHISPER_MODEL_NAME, device=device)
+        logger.info(f"✅ Whisper model loaded in {time.time() - start_time:.2f}s")
     return _model_cache['whisper']
 
 def get_nllb_pipeline(src_lang, tgt_lang):
@@ -70,9 +73,11 @@ def get_nllb_pipeline(src_lang, tgt_lang):
     # Actually, pipeline is specific to task, but model/tokenizer are heavy.
     
     if 'nllb_model' not in _model_cache:
-        logger.info(f"Loading NLLB model: {NLLB_CHECKPOINT}...")
+        start_time = time.time()
+        logger.info(f"⏳ Loading NLLB model: {NLLB_CHECKPOINT}...")
         _model_cache['nllb_model'] = AutoModelForSeq2SeqLM.from_pretrained(NLLB_CHECKPOINT).to(device)
         _model_cache['nllb_tokenizer'] = AutoTokenizer.from_pretrained(NLLB_CHECKPOINT)
+        logger.info(f"✅ NLLB model loaded in {time.time() - start_time:.2f}s")
     
     # We create a new pipeline for the specific language pair, but reuse the loaded model
     # Note: The original code created a pipeline every time. We can do the same but use the cached model.
@@ -312,6 +317,8 @@ def get_captions(file_path):
     # Lazy load mechanism
     asr_model = get_whisper_model()
     
+    start_time = time.time()
+    logger.info("🎙️ Starting transcription...")
     audio = whisper.load_audio(file_path)
     
     try:
@@ -322,6 +329,8 @@ def get_captions(file_path):
         fallback_options['beam_size'] = 1
         fallback_options['best_of'] = 1
         transcription = asr_model.transcribe(audio, **fallback_options)
+    
+    logger.info(f"📝 Transcription completed in {time.time() - start_time:.2f}s")
     
     rows = []
     for segment in transcription['segments']:
@@ -344,7 +353,8 @@ def convert_floats(row):
 
 
 def translate(df, src_lang="eng_Latn", tgt_lang="hin_Deva", max_batch_chars=400):
-    logger.info(f"Translating to {tgt_lang}...")
+    start_time = time.time()
+    logger.info(f"🌐 Translating to {tgt_lang}...")
     translation_pipeline = get_nllb_pipeline(src_lang, tgt_lang)
 
     output_column = []
@@ -382,6 +392,7 @@ def translate(df, src_lang="eng_Latn", tgt_lang="hin_Deva", max_batch_chars=400)
         output_column.append(output_value)
         previous_context = current_text
         
+    logger.info(f"✨ Translation completed in {time.time() - start_time:.2f}s")
     df['TRANSLATION'] = output_column
     return df
 
@@ -463,6 +474,7 @@ def translate_video(video_path, language_voice, gender_voice, output_path):
         text_to_mel_instance = TextToMel(glow_model_dir=glow_model_dir, device=device)
         mel_to_wav_instance = MelToWav(hifi_model_dir=hifi_model_dir, device=device)
         tts_model_cache[model_key] = (text_to_mel_instance, mel_to_wav_instance)
+        logger.info(f"✅ TTS models loaded in {time.time() - start_time:.2f}s")
     
     text_to_mel, mel_to_wav = tts_model_cache[model_key]
 

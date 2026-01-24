@@ -8,10 +8,15 @@ output.wav
 Dubbed_*.mp4
 *.mp4
 !Voicet-Homepage.png
+hf_cache/
+whisper_cache/
+model_storage/
 
 # Environments
 venv/
 .env
+.env.*
+!.env.example
 
 # Python
 __pycache__/
@@ -35,6 +40,12 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
 
 # Editors/IDE
 .vscode/
@@ -45,4 +56,3 @@ MANIFEST
 # OS
 .DS_Store
 Thumbs.db
-model_storage/

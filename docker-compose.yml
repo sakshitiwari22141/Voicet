@@ -7,10 +7,38 @@ services:
       - "5000:5000"
     volumes:
       # Map the model storage from host to container
-      # This to prevent re-downloading models
       - ./model_storage:/app/VAKYANSH_TTS/tts_infer/translit_models
       # Persist uploads
       - ./Voicet/project/static/uploads:/app/Voicet/project/static/uploads
+      # Persist HuggingFace Cache
+      - ./hf_cache:/root/.cache/huggingface
+      # Persist Whisper Cache
+      - ./whisper_cache:/root/.cache/whisper
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
     # Ensuring that entrypoint script is executable
     command: bash -c "chmod +x run_docker.sh && ./run_docker.sh"
+    restart: unless-stopped
+
+  redis:
+    image: "redis:alpine"
+    ports:
+      - "6379:6379"
+
+  celery-worker:
+    image: voicet-app:latest
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+      - voicet-app
+    volumes:
+      - ./model_storage:/app/VAKYANSH_TTS/tts_infer/translit_models
+      - ./Voicet/project/static/uploads:/app/Voicet/project/static/uploads
+      - ./hf_cache:/root/.cache/huggingface
+      - ./whisper_cache:/root/.cache/whisper
+    working_dir: /app/Voicet
+    command: celery -A project.worker.celery worker --loglevel=info
     restart: unless-stopped
