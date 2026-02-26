@@ -12,42 +12,41 @@
 {% endwith %}
 
 <div class="columns is-centered">
-   <div class="column is-3">
-      <video width="250" height="400" src="{{ url_for('static', filename='uploads/' + video.file_name)  }}" type="video/mp4" controls></video>
-      <div class="buttons is-centered">
-         <h2>{{ video.original_filename }}</h2>
-         <p>
-         <h2>Posted by : {{ video.posted_by }}</h2>
-         </p>
-         <div class="button-group">
-            <a class="button is-link" href="{{ url_for('main.download_post', id=video.id) }}">Download</a>
-            <a class="button is-danger" href="{{ url_for('main.delete_post',id=video.id) }}">Delete</a>
-         </div>
+  <div class="column is-3">
+    <video width="250" height="400" src="{{ url_for('static', filename='uploads/' + video.file_name)  }}"
+      type="video/mp4" controls></video>
+    <div class="buttons is-centered">
+      <h2>{{ video.original_filename }}</h2>
+      <p>
+      <h2>Posted by : {{ video.posted_by }}</h2>
+      </p>
+      <div class="button-group">
+        <a class="button is-link" href="{{ url_for('main.download_post', id=video.id) }}">Download</a>
+        <a class="button is-danger" href="{{ url_for('main.delete_post',id=video.id) }}">Delete</a>
       </div>
-   </div>
+    </div>
+  </div>
 
-   <div class="column is-3">
-    <form id="translate-form" action="{{ url_for('main.translate_post', id=video.id) }}" method="POST" enctype=multipart/form-data>
+  <div class="column is-3">
+    <form id="translate-form" action="{{ url_for('main.translate_post', id=video.id) }}" method="POST"
+      enctype=multipart/form-data>
 
       <div class="field mt-6">
         <h2><label class="label is-large m-3">Translate To Language</label></h2>
         <div class="control">
           <div class="select is-medium">
             <select name="translateTo">
-                <option value="bengali" >Bengali</option>
-                <option value="gujarati" >Gujarati</option>
-                <option value="hindi" selected>Hindi</option>
-                <option value="kannada" >Kannada</option>
-                <option value="malayalam" >Malayalam</option>
-                <option value="marathi" >Marathi</option>
-                <option value="odia" >Odia</option>
-                <option value="tamil" >Tamil</option>
-                <option value="telugu" >Telugu</option>
+                {% for lang in available_langs %}
+                <option value="{{ lang.lower() }}" {% if lang == 'Hindi' %}selected{% endif %}>{{ lang }}</option>
+                {% endfor %}
+                {% if not available_langs %}
+                <option disabled>No models available</option>
+                {% endif %}
             </select>
           </div>
         </div>
       </div>
-      
+
       <div class="field">
         <h2><label class="label is-large m-5">Translate To Gender</label></h2>
         <div class="control">
@@ -66,83 +65,84 @@
         </div>
       </div>
     </form>
-    
+
     <div id="progress-container" style="display:none; margin-top: 20px;">
-        <h3 class="subtitle">Processing...</h3>
-        <progress class="progress is-primary" max="100">15%</progress>
-        <p id="status-text">Starting...</p>
+      <h3 class="subtitle">Processing...</h3>
+      <progress class="progress is-primary" max="100">15%</progress>
+      <p id="status-text">Starting...</p>
     </div>
-    
+
     <div id="result-container" style="display:none; margin-top: 20px;">
-        <div class="notification is-success">
-            Translation Complete!
-        </div>
-        <p>The file has been processed. It will be available in your gallery shortly (after page reload) or you can download it directly.</p>
-        <a id="download-link" href="#" class="button is-link is-large">Download Translated Video</a>
+      <div class="notification is-success">
+        Translation Complete!
+      </div>
+      <p>The file has been processed. It will be available in your gallery shortly (after page reload) or you can
+        download it directly.</p>
+      <a id="download-link" href="#" class="button is-link is-large">Download Translated Video</a>
     </div>
-    
-   </div>
+
+  </div>
 </div>
 
 <script>
-    document.getElementById('translate-form').onsubmit = function(e) {
-        e.preventDefault();
-        var form = e.target;
-        var formData = new FormData(form);
-        var btn = document.getElementById('translate-btn');
-        btn.classList.add('is-loading');
-        btn.disabled = true;
+  document.getElementById('translate-form').onsubmit = function (e) {
+    e.preventDefault();
+    var form = e.target;
+    var formData = new FormData(form);
+    var btn = document.getElementById('translate-btn');
+    btn.classList.add('is-loading');
+    btn.disabled = true;
 
-        fetch(form.action, {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.task_id) {
-                document.getElementById('progress-container').style.display = 'block';
-                checkStatus(data.task_id);
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            btn.classList.remove('is-loading');
-            btn.disabled = false;
-        });
-    };
+    fetch(form.action, {
+      method: 'POST',
+      body: formData
+    })
+      .then(response => response.json())
+      .then(data => {
+        if (data.task_id) {
+          document.getElementById('progress-container').style.display = 'block';
+          checkStatus(data.task_id);
+        }
+      })
+      .catch(error => {
+        console.error('Error:', error);
+        btn.classList.remove('is-loading');
+        btn.disabled = false;
+      });
+  };
 
-    function checkStatus(taskId) {
-        fetch(`/status/${taskId}`)
-        .then(response => response.json())
-        .then(data => {
-            document.getElementById('status-text').innerText = data.status;
-            
-            if (data.state === 'SUCCESS' || data.state === 'FAILURE') {
-                document.getElementById('progress-container').style.display = 'none';
-                var btn = document.getElementById('translate-btn');
-                btn.classList.remove('is-loading');
-                btn.disabled = false;
-                
-                if (data.state === 'SUCCESS') {
-                    document.getElementById('result-container').style.display = 'block';
-                    // We need a proper download URL. Since we didn't store it in DB in the worker (simplified),
-                    // we'll need a way to download it. 
-                    // For now, let's just point to gallery as a fallback or construct a download link?
-                    // Actually, the main.py logic for saving to DB is skipped in the worker version for simplicity.
-                    // Ideally, the worker should update the DB. 
-                    
-                    // Since I didn't add DB updating in the worker yet (requires app context hack),
-                    // I'll leave the download link as a placeholder or reload the page.
-                    
-                    window.location.href = "{{ url_for('main.gallery') }}";
-                } else {
-                    alert('Translation Failed: ' + data.status);
-                }
-            } else {
-                setTimeout(() => checkStatus(taskId), 2000);
-            }
-        });
-    }
+  function checkStatus(taskId) {
+    fetch(`/status/${taskId}`)
+      .then(response => response.json())
+      .then(data => {
+        document.getElementById('status-text').innerText = data.status;
+
+        if (data.state === 'SUCCESS' || data.state === 'FAILURE') {
+          document.getElementById('progress-container').style.display = 'none';
+          var btn = document.getElementById('translate-btn');
+          btn.classList.remove('is-loading');
+          btn.disabled = false;
+
+          if (data.state === 'SUCCESS') {
+            document.getElementById('result-container').style.display = 'block';
+            // We need a proper download URL. Since we didn't store it in DB in the worker (simplified),
+            // we'll need a way to download it. 
+            // For now, let's just point to gallery as a fallback or construct a download link?
+            // Actually, the main.py logic for saving to DB is skipped in the worker version for simplicity.
+            // Ideally, the worker should update the DB. 
+
+            // Since I didn't add DB updating in the worker yet (requires app context hack),
+            // I'll leave the download link as a placeholder or reload the page.
+
+            window.location.href = "{{ url_for('main.gallery') }}";
+          } else {
+            alert('Translation Failed: ' + data.status);
+          }
+        } else {
+          setTimeout(() => checkStatus(taskId), 2000);
+        }
+      });
+  }
 </script>
 
 {% endblock %}

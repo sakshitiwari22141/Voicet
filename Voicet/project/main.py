@@ -4,6 +4,7 @@ from . import db
 from .models import Videos
 from werkzeug.utils import secure_filename
 from .worker import process_video_task
+from .voicet import get_available_languages
 import yt_dlp
 
 import os
@@ -169,7 +170,8 @@ def translate_post(id):
 
     if request.method == 'GET':
         flash('Post can be translated!','success')
-        return render_template('translate_post.html', video=video)
+        langs = get_available_languages()
+        return render_template('translate_post.html', video=video, available_langs=langs)
 
     elif request.method == 'POST':
         filepath = video.file_path
@@ -189,13 +191,31 @@ def translate_post(id):
         if not os.path.exists(upload_dir):
             os.makedirs(upload_dir)
             
+        # Meaningful name: OriginalTitle_Lang_Gender.ext
+        base_name = os.path.splitext(video.original_filename)[0]
+        new_display_name = f"{base_name}_{language_voice.capitalize()}_{gender_voice.capitalize()}{file_extension}"
+        
         output_path = os.path.join(upload_dir, random_filename)
-        
+
         # Start Celery Task
-        task = process_video_task.delay(filepath, language_voice, gender_voice, output_path, f"Translated_{video.original_filename}")
+        task = process_video_task.delay(filepath, language_voice, gender_voice, output_path, new_display_name)
         
-        # We don't save to DB immediately, or we could save with 'Processing' status.
-        # For now, let's just return the Task ID to the frontend.
+        # Save a placeholder record in the DB
+        translated_video = Videos(
+            file_name=random_filename,
+            file_extension=file_extension,
+            original_filename=new_display_name,
+            file_path=output_path,
+            task_id=task.id,
+            translate_to_languge=language_voice,
+            translate_to_gender=gender_voice,
+            video_processed=0, # 0 means pending
+            percent_processed=0,
+            posted_by=current_user.name
+        )
+        db.session.add(translated_video)
+        db.session.commit()
+        
         return jsonify({'task_id': task.id}), 202
 
 @main.route('/status/<task_id>')
@@ -219,10 +239,13 @@ def taskstatus(task_id):
             response['result'] = task.info['result']
             response['original_filename'] = task.info.get('original_filename', 'translated.mp4')
             
-            # Here we might want to save to DB if we didn't before.
-            # But the worker function doesn't have access to Flask app context properly unless configured.
-            # For simplicity, we can let the task return the path and frontend redirects to a 'save' endpoint, 
-            # Or assume the worker saved the file and we just need to let the user download it.
+            # Update the database record once the task is successful
+            video = Videos.query.filter_by(task_id=task_id).first()
+            if video and video.video_processed == 0:
+                video.video_processed = 1
+                video.percent_processed = 100
+                db.session.commit()
+                logger.info(f"Database record updated for task: {task_id}")
             
     else:
         # something went wrong in the background job

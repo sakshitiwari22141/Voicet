@@ -1,6 +1,7 @@
 
 import os
 import time
+
 import subprocess
 import whisper
 import pandas as pd
@@ -40,6 +41,14 @@ patch_torch_load()
 
 # Add Vakanysh path
 vakyansh_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'VAKYANSH_TTS'))
+# Preference for model_storage if available (contains working checkpoints)
+model_storage_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'model_storage'))
+
+if os.path.exists(model_storage_path):
+    vakyansh_models_base = model_storage_path
+else:
+    vakyansh_models_base = os.path.join(vakyansh_path, 'tts_infer', 'translit_models')
+
 sys.path.append(vakyansh_path)
 
 from tts_infer.tts import TextToMel, MelToWav
@@ -302,8 +311,51 @@ for code in codes_as_string:
     lang, lang_code = code.split('\t')
     flores_codes[lang] = lang_code
 
+# Mapping for Vakyansh XlitEngine (full name to short code)
+FULL_TO_SHORT_LANG = {
+    "hindi": "hi",
+    "kannada": "kn",
+    "tamil": "ta",
+    "telugu": "te",
+    "malayalam": "ml",
+    "marathi": "mr",
+    "gujarati": "gu",
+    "bengali": "bn",
+    "panjabi": "pa",
+    "urdu": "ur",
+    "english": "en"
+}
 
-# --- Transcription ---
+# --- Language Helpers ---
+
+def get_available_languages():
+    """
+    Scans vakyansh_models_base to find languages that have at least one usable checkpoint (.pth).
+    Returns a list of full language names.
+    """
+    available = []
+    # Using the same mapping keys we defined
+    candidates = list(FULL_TO_SHORT_LANG.keys())
+    
+    for lang in candidates:
+        # Check both genders for any usable glow model
+        glow_female = os.path.join(vakyansh_models_base, lang, 'female', 'glow_ckp')
+        glow_male = os.path.join(vakyansh_models_base, lang, 'male', 'glow_ckp')
+        
+        has_female = False
+        if os.path.isdir(glow_female):
+            if any(f.endswith('.pth') for f in os.listdir(glow_female)):
+                has_female = True
+                
+        has_male = False
+        if os.path.isdir(glow_male):
+            if any(f.endswith('.pth') for f in os.listdir(glow_male)):
+                has_male = True
+        
+        if has_female or has_male:
+            available.append(lang.capitalize())
+            
+    return sorted(available)
 
 transcribe_options = dict(
     beam_size=5, 
@@ -400,10 +452,16 @@ def translate(df, src_lang="eng_Latn", tgt_lang="hin_Deva", max_batch_chars=400)
 
 def translit(text, lang):
     reg = re.compile(r'[a-zA-Z]')
-    engine = XlitEngine(lang)
-    words = [engine.translit_word(word, topk=1)[lang][0] if reg.match(word) else word for word in text.split()]
-    updated_sent = ' '.join(words)
-    return updated_sent
+    # XlitEngine needs short codes (e.g., 'ta', 'te')
+    short_lang = FULL_TO_SHORT_LANG.get(lang.lower(), lang)
+    try:
+        engine = XlitEngine(short_lang)
+        words = [engine.translit_word(word, topk=1)[short_lang][0] if reg.match(word) else word for word in text.split()]
+        updated_sent = ' '.join(words)
+        return updated_sent
+    except Exception as e:
+        logger.warning(f"⚠️ Transliteration failed for {lang} ({e}). Returning original text.")
+        return text
 
 def run_tts(text, lang='hi', count=0):
     # Relies on global text_to_mel and mel_to_wav set in translate_video
@@ -449,8 +507,8 @@ def translate_video(video_path, language_voice, gender_voice, output_path):
     gender_voice = gender_voice.lower()
     
     # Path construction for Vakyansh models
-    glow_model_dir = os.path.join(vakyansh_path, 'tts_infer', 'translit_models', language_voice, gender_voice, 'glow_ckp')
-    hifi_model_dir = os.path.join(vakyansh_path, 'tts_infer', 'translit_models', language_voice, gender_voice, 'hifi_ckp')
+    glow_model_dir = os.path.join(vakyansh_models_base, language_voice, gender_voice, 'glow_ckp')
+    hifi_model_dir = os.path.join(vakyansh_models_base, language_voice, gender_voice, 'hifi_ckp')
 
     logger.info('#'*50)
     logger.info(f"Lang: {language_voice}, Gender: {gender_voice}")
@@ -471,6 +529,7 @@ def translate_video(video_path, language_voice, gender_voice, output_path):
         if not os.path.exists(hifi_model_dir) or not os.listdir(hifi_model_dir):
             raise FileNotFoundError(f"Missing HiFi model directory: {hifi_model_dir}")
 
+        start_time = time.time()
         text_to_mel_instance = TextToMel(glow_model_dir=glow_model_dir, device=device)
         mel_to_wav_instance = MelToWav(hifi_model_dir=hifi_model_dir, device=device)
         tts_model_cache[model_key] = (text_to_mel_instance, mel_to_wav_instance)

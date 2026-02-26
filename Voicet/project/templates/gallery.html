@@ -19,20 +19,34 @@
 
 <div class="columns is-multiline">
    {% for video in videos %}
-   <div class="column is-3">
-      <video width="250" height="400" src="{{ url_for('static', filename='uploads/' + video.file_name)  }}" type="video/mp4" controls></video>
-      <div class="buttons is-centered">
-         <h2>{{ video.original_filename }}</h2>
-         <p>
-         <h2>Posted by : {{ video.posted_by }}</h2>
-         </p>
-         <div class="button-group">
-            <a class="button is-link" href="{{ url_for('main.download_post', id=video.id) }}">Download</a>
-            <a class="button is-danger" href="{{ url_for('main.delete_post',id=video.id) }}">Delete</a>
-            <a class="button is-primary" href="{{ url_for('main.translate_post' , id=video.id) }}">Translate</a>
-         </div>
-      </div>
-   </div>
+    <div class="column is-3">
+       {% if video.video_processed == 0 and video.task_id %}
+       <div class="notification is-info has-text-centered" style="height: 400px; display: flex; align-items: center; justify-content: center; flex-direction: column;">
+          <p class="is-size-4">Processing...</p>
+          <progress class="progress is-small is-primary mt-4" max="100"></progress>
+       </div>
+       {% else %}
+       <video width="250" height="400" src="{{ url_for('static', filename='uploads/' + video.file_name)  }}" type="video/mp4" controls></video>
+       {% endif %}
+       <div class="buttons is-centered">
+          <h2>{{ video.original_filename }}</h2>
+          <p>
+          <h2>Posted by : {{ video.posted_by }}</h2>
+          </p>
+          <div class="button-group">
+             {% if video.video_processed == 1 or not video.task_id %}
+             <a class="button is-link" href="{{ url_for('main.download_post', id=video.id) }}">Download</a>
+             <a class="button is-danger" href="{{ url_for('main.delete_post',id=video.id) }}">Delete</a>
+             {% if not video.task_id %}
+             <a class="button is-primary" href="{{ url_for('main.translate_post' , id=video.id) }}">Translate</a>
+             {% endif %}
+             {% else %}
+             <button class="button is-static">Translating...</button>
+             <a class="button is-danger" href="{{ url_for('main.delete_post',id=video.id) }}">Delete</a>
+             {% endif %}
+          </div>
+       </div>
+    </div>
    {% endfor %}
 </div>
 </div>

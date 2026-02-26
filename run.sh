@@ -10,6 +10,7 @@ echo "🚀 Preparing to run Voicet..."
 # 1. Define paths
 PROJECT_ROOT="$(pwd)"
 UPLOAD_DIR="$PROJECT_ROOT/Voicet/project/static/uploads"
+BREW_PREFIX=$(homebrew --prefix 2>/dev/null || echo "/home/linuxbrew/.linuxbrew")
 
 # Detect OS to set the correct venv bin path
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
@@ -71,8 +72,30 @@ else
     echo "✅ Voice models verified."
 fi
 
-# 7. Start Application
-echo "🌐 Starting Flask application..."
+# 7. Start Services (Redis & Celery)
+echo "🍃 Starting Redis..."
+if ! pgrep redis-server > /dev/null; then
+    "$BREW_PREFIX/bin/redis-server" --daemonize yes
+    sleep 2
+fi
+
+echo "🐝 Starting Celery worker..."
+# Kill any existing workers first to avoid conflicts
+pkill -f "celery -A project.worker.celery" || true
 cd Voicet
+"$VENV_BIN/celery" -A project.worker.celery worker --loglevel=info > celery.log 2>&1 &
+CELERY_PID=$!
+
+# 8. Start Application
+echo "🌐 Starting Flask application..."
 export FLASK_APP=project
+
+# Cleanup function to kill background processes on exit
+cleanup() {
+    echo "🛑 Shutting down..."
+    kill $CELERY_PID || true
+    # We leave Redis running as it's generally fine, but could kill it if preferred
+}
+trap cleanup EXIT
+
 "$VENV_BIN/flask" run
