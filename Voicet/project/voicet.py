@@ -5,7 +5,7 @@ import time
 import subprocess
 import whisper
 import pandas as pd
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import re
 import torch
 import functools
@@ -77,6 +77,27 @@ def get_whisper_model():
         logger.info(f"✅ Whisper model loaded in {time.time() - start_time:.2f}s")
     return _model_cache['whisper']
 
+class NLLBTranslationPipeline:
+    def __init__(self, model, tokenizer, src_lang, tgt_lang, max_length=400):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.src_lang = src_lang
+        self.tgt_lang = tgt_lang
+        self.max_length = max_length
+
+    def __call__(self, text):
+        self.tokenizer.src_lang = self.src_lang
+        inputs = self.tokenizer(text, return_tensors="pt").to(self.model.device)
+        forced_bos_token_id = self.tokenizer.convert_tokens_to_ids(self.tgt_lang)
+        outputs = self.model.generate(
+            **inputs,
+            forced_bos_token_id=forced_bos_token_id,
+            max_length=self.max_length
+        )
+        translated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        return [{"translation_text": translated_text}]
+
+
 def get_nllb_pipeline(src_lang, tgt_lang):
     # Cache key based on model name, not lang (pipeline can be reused if we just load model once)
     # Actually, pipeline is specific to task, but model/tokenizer are heavy.
@@ -89,14 +110,13 @@ def get_nllb_pipeline(src_lang, tgt_lang):
         logger.info(f"✅ NLLB model loaded in {time.time() - start_time:.2f}s")
     
     # We create a new pipeline for the specific language pair, but reuse the loaded model
-    # Note: The original code created a pipeline every time. We can do the same but use the cached model.
-    return pipeline("translation",
-                    model=_model_cache['nllb_model'],
-                    tokenizer=_model_cache['nllb_tokenizer'],
-                    src_lang=src_lang,
-                    tgt_lang=tgt_lang,
-                    max_length=400,
-                    device=0 if device == "cuda" else -1)
+    return NLLBTranslationPipeline(
+        model=_model_cache['nllb_model'],
+        tokenizer=_model_cache['nllb_tokenizer'],
+        src_lang=src_lang,
+        tgt_lang=tgt_lang,
+        max_length=400
+    )
 
 # --- Language Codes ---
 

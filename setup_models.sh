@@ -14,8 +14,8 @@ mkdir -p "$BASE_DIR"
 if [ ! -f "VAKYANSH_TTS/tts_infer/translit_models/default_lineup.json" ]; then
     echo "📥 Downloading Transliteration models..."
     cd VAKYANSH_TTS/tts_infer
-    wget -q --show-progress https://storage.googleapis.com/vakyansh-open-models/translit_models.zip
-    unzip -o translit_models.zip
+    /usr/bin/python3 -c "import urllib.request; urllib.request.urlretrieve('https://storage.googleapis.com/vakyansh-open-models/translit_models.zip', 'translit_models.zip')"
+    unzip -o -q translit_models.zip
     rm translit_models.zip
     cd ../..
 fi
@@ -28,7 +28,7 @@ download_model() {
     local url=$4
     local target_dir="$BASE_DIR/$lang/$gender/${model_type}_ckp"
 
-    if [ -d "$target_dir" ] && [ "$(ls -A "$target_dir")" ]; then
+    if [ -d "$target_dir" ] && [ "$(find "$target_dir" -maxdepth 1 -name "*.pth" -o -name "*.pt" | wc -l)" -gt 0 ]; then
         echo "✅ $lang $gender $model_type already exists. Skipping."
         return
     fi
@@ -36,10 +36,10 @@ download_model() {
     echo "📥 Downloading $lang $gender $model_type..."
     mkdir -p "$target_dir"
     local temp_file=$(mktemp)
-    wget -q --show-progress -O "$temp_file" "$url"
+    /usr/bin/python3 -c "import urllib.request; urllib.request.urlretrieve('$url', '$temp_file')"
     
     echo "📦 Extracting $lang $gender $model_type..."
-    unzip -q -j "$temp_file" -d "$target_dir"
+    unzip -q -j -o "$temp_file" -d "$target_dir"
     rm "$temp_file"
 }
 

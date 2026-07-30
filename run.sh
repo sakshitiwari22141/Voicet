@@ -18,7 +18,7 @@ if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
     PYTHON_EXE="python"
 else
     VENV_BIN="$PROJECT_ROOT/venv/bin"
-    PYTHON_EXE="python3"
+    PYTHON_EXE="/usr/bin/python3"
 fi
 
 # 2. Setup Virtual Environment
@@ -60,7 +60,7 @@ if [ ! -f "$PROJECT_ROOT/VAKYANSH_TTS/tts_infer/translit_models/default_lineup.j
 fi
 
 for lang in "${LANGUAGES[@]}"; do
-    if [ ! -d "$PROJECT_ROOT/VAKYANSH_TTS/tts_infer/translit_models/$lang" ]; then
+    if [ ! -d "$PROJECT_ROOT/VAKYANSH_TTS/tts_infer/translit_models/$lang" ] || [ "$(find "$PROJECT_ROOT/VAKYANSH_TTS/tts_infer/translit_models/$lang" -name "*.pth" -o -name "*.pt" | wc -l)" -eq 0 ]; then
         MISSING_MODELS+=("$lang")
     fi
 done
